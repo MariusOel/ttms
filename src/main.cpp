@@ -5,13 +5,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "ota_manager.hpp"
 #include "ui/ui.h"
+#include <math.h>
 #include <stdio.h>
 
+#define FIRMWARE_VERSION "0.1.7"
 static const char *TAG = "MAIN";
 static LGFX_ESP32C6_ST7789 tft;
 
-/* Change to your screen resolution */
+/* Screen resolution */
 static const uint32_t screenWidth = 320;
 static const uint32_t screenHeight = 240;
 
@@ -38,15 +41,18 @@ static void lv_tick_task(void *arg) {
 }
 
 extern "C" void app_main(void) {
-  ESP_LOGI(TAG, "Starting Tire Temp Monitor");
+  ESP_LOGI(TAG, "Starting Tire Temp Monitor v%s", FIRMWARE_VERSION);
+
+  // 1. Hardware & Services Init
+  ota_manager_start();
 
   tft.begin();
-  tft.setRotation(1); // 90 degrees clockwise
+  tft.setRotation(1); // Landscape
   tft.setBrightness(128);
 
   lv_init();
 
-  // Setup LVGL tick timer (10ms periodic)
+  // 2. LVGL Tick Timer
   const esp_timer_create_args_t lvgl_tick_timer_args = {
       .callback = &lv_tick_task,
       .arg = NULL,
@@ -55,8 +61,9 @@ extern "C" void app_main(void) {
       .skip_unhandled_events = false};
   esp_timer_handle_t lvgl_tick_timer;
   esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer);
-  esp_timer_start_periodic(lvgl_tick_timer, 10000); // 10ms in microseconds
+  esp_timer_start_periodic(lvgl_tick_timer, 10000); // 10ms
 
+  // 3. Display Driver Setup
   lv_disp_draw_buf_init(&draw_buf, buf, NULL, screenWidth * 10);
 
   static lv_disp_drv_t disp_drv;
@@ -67,13 +74,24 @@ extern "C" void app_main(void) {
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
 
+  // 4. SHOW SPLASH SCREEN (3 seconds)
+  ui_show_splash(FIRMWARE_VERSION, "IP: 192.168.4.1");
+
+  uint32_t splash_start = esp_timer_get_time() / 1000;
+  while ((esp_timer_get_time() / 1000) - splash_start < 3000) {
+    lv_timer_handler();
+    vTaskDelay(pdMS_TO_TICKS(50)); // Yield to IDLE and other tasks
+  }
+
+  // 5. INITIALIZE MAIN UI
+  lv_obj_clean(lv_scr_act());
   ui_init();
 
-  // Pre-fill simulation data (300 points = 5 minutes of history)
-  // To avoid waiting for the graph to fill up
+  // 6. PRE-FILL DATA (Optimized)
+  ESP_LOGI(TAG, "Pre-filling simulation data...");
   {
-    float time_s = -300.0; // Start 5 minutes ago
-    const float PI = 3.14159265359;
+    float time_s = -300.0;
+    const float PI = 3.14159265;
     const float oscillation_period = 120.0;
     const float trend_period = 600.0;
     const float min_temp = 20.0;
@@ -84,7 +102,6 @@ extern "C" void app_main(void) {
 
     for (int i = 0; i < 300; i++) {
       time_s += 1.0;
-
       float trend = trend_center +
                     trend_amplitude * sin(2.0 * PI * time_s / trend_period);
       float sim_front = trend + oscillation_amplitude *
@@ -93,51 +110,36 @@ extern "C" void app_main(void) {
           trend + oscillation_amplitude *
                       sin(2.0 * PI * time_s / oscillation_period + PI / 3.0);
 
-      ui_update_data(sim_front, sim_rear);
+      // Add data without refreshing the chart for speed
+      bool is_last = (i == 299);
+      ui_update_data(sim_front, sim_rear, is_last);
+
+      // Yield every iteration during pre-fill to ensure IDLE runs
+      vTaskDelay(1);
     }
   }
+  ESP_LOGI(TAG, "Startup complete.");
 
+  // 7. MAIN LOOP
   uint32_t last_update = 0;
   while (1) {
     lv_timer_handler();
-    vTaskDelay(pdMS_TO_TICKS(5));
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-    uint32_t now = esp_timer_get_time() / 1000; // Convert to ms
-    if (now - last_update > 1000) {
+    uint32_t now = esp_timer_get_time() / 1000;
+    if (now - last_update >= 1000) {
       last_update = now;
 
-      // Simulate sensor data with trending sinusoidal curves
-      // Oscillation period: 120 seconds (2 minutes)
-      // Trend period: 600 seconds (10 minutes) - 20°C -> 50°C -> 20°C
       static float time_seconds = 0.0;
-      time_seconds += 1.0; // Increment by 1 second
+      time_seconds += 1.0;
 
-      const float PI = 3.14159265359;
-      const float oscillation_period = 120.0; // Fast oscillation: 2 minutes
-      const float trend_period = 600.0; // Slow trend: 10 minutes (full cycle)
-      const float min_temp = 20.0;
-      const float max_temp = 50.0;
-      const float trend_amplitude = (max_temp - min_temp) / 2.0; // 15°C
-      const float trend_center = (max_temp + min_temp) / 2.0;    // 35°C
-      const float oscillation_amplitude = 3.0; // ±3°C oscillation
-
-      // Trending baseline: goes from 20°C to 50°C and back to 20°C
-      float trend =
-          trend_center +
-          trend_amplitude * sin(2.0 * PI * time_seconds / trend_period);
-
-      // Front tire: oscillating sine wave on top of trend
-      float sim_front =
-          trend + oscillation_amplitude *
-                      sin(2.0 * PI * time_seconds / oscillation_period);
-
-      // Rear tire: oscillating sine wave with phase shift on top of trend
+      const float PI = 3.14159265;
+      float trend = 35.0 + 15.0 * sin(2.0 * PI * time_seconds / 600.0);
+      float sim_front = trend + 3.0 * sin(2.0 * PI * time_seconds / 120.0);
       float sim_rear =
-          trend +
-          oscillation_amplitude *
-              sin(2.0 * PI * time_seconds / oscillation_period + PI / 3.0);
+          trend + 3.0 * sin(2.0 * PI * time_seconds / 120.0 + PI / 3.0);
 
-      ui_update_data(sim_front, sim_rear);
+      ui_update_data(sim_front, sim_rear, true);
     }
   }
 }

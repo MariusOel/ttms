@@ -8,7 +8,8 @@ extern "C" {
 #include "lvgl.h"
 
 void ui_init(void);
-void ui_update_data(float front_temp, float rear_temp);
+void ui_show_splash(const char *version, const char *ip);
+void ui_update_data(float front_temp, float rear_temp, bool refresh);
 
 #ifdef __cplusplus
 }

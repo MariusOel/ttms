@@ -33,7 +33,9 @@ static int history_count = 0;
 static lv_obj_t *label_age;
 
 // Declare the font if not already available via header
+LV_FONT_DECLARE(lv_font_montserrat_24);
 LV_FONT_DECLARE(lv_font_montserrat_48);
+
 
 void ui_init(void) {
   // Set black background for the screen
@@ -131,8 +133,59 @@ void ui_init(void) {
   lv_obj_move_foreground(label_age);
 }
 
-void ui_update_data(float front_temp, float rear_temp) {
-  // --- Moving Average ---
+void ui_show_splash(const char *version, const char *ip) {
+  // 1. Black base with subtle dark grey gradient attempt (style-only)
+  lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
+
+  // 2. "MRacing" Logo - The centerpiece
+  // Using rotation to simulate speed/italics
+  lv_obj_t *logo = lv_label_create(lv_scr_act());
+  lv_label_set_text(logo, "MRacing");
+  lv_obj_set_style_text_color(logo, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_set_style_text_font(logo, &lv_font_montserrat_24, 0);
+  // -7 degrees tilt (v8 uses 0.1 degree units)
+  lv_obj_set_style_transform_angle(logo, -70, 0);
+  lv_obj_align(logo, LV_ALIGN_CENTER, 0, -45);
+
+  // 3. Speed Bar (Racing underline)
+  lv_obj_t *bar = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(bar, 120, 3);
+  lv_obj_set_style_bg_color(bar, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_set_style_border_width(bar, 0, 0);
+  lv_obj_align(bar, LV_ALIGN_CENTER, 0, -30);
+  lv_obj_set_style_transform_angle(bar, -70, 0); // Tilt the bar too!
+
+  // 4. "TTMS" in a blocky highlight
+  lv_obj_t *ttms_bg = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(ttms_bg, 80, 35);
+  lv_obj_set_style_bg_color(ttms_bg, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_border_color(ttms_bg, lv_color_hex(0x404040), 0);
+  lv_obj_set_style_border_width(ttms_bg, 1, 0);
+  lv_obj_set_style_radius(ttms_bg, 4, 0);
+  lv_obj_align(ttms_bg, LV_ALIGN_CENTER, 0, 5);
+
+  lv_obj_t *ttms_label = lv_label_create(ttms_bg);
+  lv_label_set_text(ttms_label, "TTMS");
+  lv_obj_set_style_text_color(ttms_label, lv_color_white(), 0);
+  lv_obj_set_style_text_font(ttms_label, &lv_font_montserrat_24, 0);
+  lv_obj_center(ttms_label);
+
+  // 5. Full Descriptive Name
+  lv_obj_t *full_name = lv_label_create(lv_scr_act());
+  lv_label_set_text(full_name, "Tire Temp Monitoring System");
+  lv_obj_set_style_text_color(full_name, lv_color_hex(0x888888), 0);
+  lv_obj_align(full_name, LV_ALIGN_CENTER, 0, 45);
+
+  // 6. Footer (Version and Server IP)
+  lv_obj_t *footer = lv_label_create(lv_scr_act());
+  char fut_buf[64];
+  snprintf(fut_buf, sizeof(fut_buf), "Ver %s  |  Server: %s", version, ip);
+  lv_label_set_text(footer, fut_buf);
+  lv_obj_set_style_text_color(footer, lv_color_hex(0x444444), 0);
+  lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, -10);
+}
+void ui_update_data(float front_temp, float rear_temp, bool refresh) {
+  // Update Moving Averages first so we can plot them
   front_history[history_idx] = front_temp;
   rear_history[history_idx] = rear_temp;
   history_idx = (history_idx + 1) % AVG_WINDOW_SIZE;
@@ -149,11 +202,8 @@ void ui_update_data(float front_temp, float rear_temp) {
   float avg_rear = (history_count > 0) ? (sum_rear / history_count) : rear_temp;
 
   // --- Direction tracking (for trend label color and per-segment trend series)
-  // ---
   static lv_coord_t prev_scaled_avg_front = LV_CHART_POINT_NONE;
   static lv_coord_t prev_scaled_avg_rear = LV_CHART_POINT_NONE;
-  static float prev_avg_front = 0;
-  static float prev_avg_rear = 0;
 
   lv_coord_t scaled_front = (lv_coord_t)(front_temp * 10.0f);
   lv_coord_t scaled_rear = (lv_coord_t)(rear_temp * 10.0f);
@@ -164,7 +214,7 @@ void ui_update_data(float front_temp, float rear_temp) {
   bool front_asc = (prev_scaled_avg_front == LV_CHART_POINT_NONE) ||
                    (scaled_avg_front >= prev_scaled_avg_front);
   bool rear_asc = (prev_scaled_avg_rear == LV_CHART_POINT_NONE) ||
-                  (scaled_avg_rear >= prev_scaled_avg_rear);
+                   (scaled_avg_rear >= prev_scaled_avg_rear);
 
   // Detect transition by comparing previous direction flag
   static bool prev_front_asc = true;
@@ -212,21 +262,21 @@ void ui_update_data(float front_temp, float rear_temp) {
   lv_obj_set_style_text_color(label_avg_front, color_front, 0);
   lv_obj_set_style_text_color(label_avg_rear, color_rear, 0);
 
-  lv_chart_refresh(chart_front);
-  lv_chart_refresh(chart_rear);
+  // Update labels text
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%.1f°", avg_front);
+  lv_label_set_text(label_avg_front, buf);
+  snprintf(buf, sizeof(buf), "%.1f°", avg_rear);
+  lv_label_set_text(label_avg_rear, buf);
+
+  if (refresh) {
+    lv_chart_refresh(chart_front);
+    lv_chart_refresh(chart_rear);
+  }
 
   // Update state
   prev_scaled_avg_front = scaled_avg_front;
   prev_scaled_avg_rear = scaled_avg_rear;
   prev_front_asc = front_asc;
   prev_rear_asc = rear_asc;
-  prev_avg_front = avg_front;
-  prev_avg_rear = avg_rear;
-
-  // Update labels
-  char buf[32];
-  snprintf(buf, sizeof(buf), "%.1f°", avg_front);
-  lv_label_set_text(label_avg_front, buf);
-  snprintf(buf, sizeof(buf), "%.1f°", avg_rear);
-  lv_label_set_text(label_avg_rear, buf);
 }
